@@ -19,22 +19,23 @@ jobs:
       with:
         python-version: '3.9'
 
-    - name: Install dependencies
+    - name: Install dependencies directly
+      # 修改点：直接在这里安装 playwright，不需要 requirements.txt 文件
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        # 安装 Playwright 及其浏览器内核
+        pip install playwright
         playwright install chromium
         playwright install-deps
 
     - name: Run Signin Script
       env:
-        # 这里引用 GitHub Secrets
+        # 必须在仓库 Settings -> Secrets 中设置 ACCOUNTS_JSON
         ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
       run: python main.py
 
     - name: Upload Debug Screenshots
-      if: always() # 无论成功失败都上传截图，方便调试
+      # 无论成功失败都上传截图，方便在 Actions 页面下载查看
+      if: always() 
       uses: actions/upload-artifact@v4
       with:
         name: debug-screenshots
