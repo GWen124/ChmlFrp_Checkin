@@ -5,7 +5,7 @@ import random
 import cv2
 import numpy as np
 from playwright.async_api import async_playwright
-# 修改导入方式
+# 修改导入方式，确保直接导入 stealth 函数
 from playwright_stealth import stealth
 
 ACCOUNTS_JSON = os.environ.get('ACCOUNTS_JSON')
@@ -76,7 +76,8 @@ async def run_account(account, browser):
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
     page = await context.new_page()
-    # 使用修正后的 stealth 调用
+    
+    # 【核心修复】使用异步兼容的 stealth 调用
     await stealth(page)
 
     try:
