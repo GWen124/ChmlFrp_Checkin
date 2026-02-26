@@ -8,12 +8,14 @@ from playwright.async_api import async_playwright
 
 ACCOUNTS_JSON = os.environ.get('ACCOUNTS_JSON', "[]")
 
+
 def mask_username(username):
     if not username:
         return "未知账号"
     if len(username) <= 3:
         return username[0] + "***"
     return username[:3] + "***"
+
 
 # === 图像识别核心 ===
 def identify_gap(bg_image_path):
@@ -43,6 +45,7 @@ def identify_gap(bg_image_path):
         print(f"   ❌ 识别缺口失败: {e}")
         return 210
 
+
 # === 仿真轨迹 ===
 def get_track(distance):
     track = []
@@ -59,8 +62,9 @@ def get_track(distance):
         v = v0 + a * t
         move = v0 * t + 1 / 2 * a * t * t
         current += move
-        track.append(round(move))
+        track.append(round(move) + random.randint(-2, 2))  # 随机微调
     return track
+
 
 async def mouse_slide(page, box, target_x):
     start_x = box['x'] + box['width'] / 2
@@ -80,36 +84,42 @@ async def mouse_slide(page, box, target_x):
     await page.mouse.up()
     print(f"   └── 🖱️ 滑动完成")
 
-async def handle_geetest(page, context_name=""):
-    """通用极验处理（登录页+签到页均可用）"""
-    try:
-        # 1. 点击式验证
-        radar = page.locator('.geetest_radar_tip, .geetest_radar_btn')
-        if await radar.count() > 0 and await radar.first.is_visible():
-            print(f"   🛡️ [{context_name}] 点击验证按钮...")
-            await radar.first.click()
-            await asyncio.sleep(3)
 
-        # 2. 滑动式验证
-        slider = page.locator('.geetest_slider_button')
-        if await slider.count() > 0 and await slider.first.is_visible():
-            print(f"   🛡️ [{context_name}] 发现滑块，启动视觉识别...")
-            captcha_box = page.locator('.geetest_window, .geetest_box_wrap, .geetest_widget').first
-            if await captcha_box.count() > 0 and await captcha_box.is_visible():
-                await captcha_box.screenshot(path="captcha_bg.png")
-                gap_x = identify_gap("captcha_bg.png")
-                final_distance = max(0, gap_x - 5)
+async def handle_geetest(page, context_name="", max_retries=3):
+    """通用极验处理，支持多次重试"""
+    for attempt in range(max_retries):
+        print(f"   🔄 第 {attempt + 1}/{max_retries} 次尝试处理验证码...")
+        try:
+            # 点击式验证
+            radar = page.locator('.geetest_radar_tip, .geetest_radar_btn')
+            if await radar.count() > 0 and await radar.first.is_visible():
+                print(f"   🛡️ [{context_name}] 点击验证按钮...")
+                await radar.first.click()
+                await asyncio.sleep(3)
 
-                box = await slider.bounding_box()
-                if box:
-                    await mouse_slide(page, box, final_distance)
-                    await asyncio.sleep(4)
+            # 滑动式验证
+            slider = page.locator('.geetest_slider_button')
+            if await slider.count() > 0 and await slider.first.is_visible():
+                print(f"   🛡️ [{context_name}] 发现滑块，启动视觉识别...")
+                captcha_box = page.locator('.geetest_window, .geetest_box_wrap, .geetest_widget').first
+                if await captcha_box.count() > 0 and await captcha_box.is_visible():
+                    await captcha_box.screenshot(path=f"captcha_bg_{context_name}.png")
+                    gap_x = identify_gap(f"captcha_bg_{context_name}.png")
+                    final_distance = max(0, gap_x - 5)
 
-            # 尝试清理遮挡
-            await page.evaluate("document.querySelectorAll('.geetest_popup_ghost, .geetest_wrap').forEach(e => e.remove())")
-    except Exception as e:
-        print(f"❌ 验证码处理异常: {e}")
-        await page.screenshot(path="geetest_error.png")
+                    box = await slider.bounding_box()
+                    if box:
+                        await mouse_slide(page, box, final_distance)
+                        await asyncio.sleep(4)
+
+                # 尝试清理遮挡
+                await page.evaluate("document.querySelectorAll('.geetest_popup_ghost, .geetest_wrap').forEach(e => e.remove())")
+                return  # 验证成功直接返回
+        except Exception as e:
+            print(f"   ❌ 验证码处理异常: {e}")
+
+    print("   ❌ 最终处理验证码失败，放弃操作。")
+
 
 async def run_one_account(account, browser):
     username = account.get('u')
@@ -130,20 +140,24 @@ async def run_one_account(account, browser):
 
     try:
         print("1. 访问登录页...")
-        await page.goto("https://panel.chmlfrp.net/", timeout=60000)
+        try:
+            await page.goto("https://panel.chmlfrp.net/", timeout=60000)
+        except Exception as e:
+            print(f"   ❌ 打开页面失败: {e}")
+            await context.close()
+            return
+
         await page.wait_for_selector('input[name="username"]', timeout=20000)
 
-        # 输入用户名和密码
         print("   👉 输入账号密码...")
         await page.fill('input[name="username"]', username)
         await page.fill('input[name="password"]', password)
 
-        # 点击登录
         login_btn = page.locator('button[type="submit"]').first
         await login_btn.click()
         await asyncio.sleep(2)
 
-        # 处理登录阶段验证码
+        # 验证登录验证码
         await handle_geetest(page, "登录阶段")
 
         # 检查是否进入主页
@@ -151,7 +165,7 @@ async def run_one_account(account, browser):
             await page.wait_for_url("**/home", timeout=15000)
             print("   ✅ 登录成功！")
         except:
-            print("   ❌ 登录后仍未跳转主页，可能失败！截图保存。")
+            print("   ❌ 登录后未跳转主页，可能失败！截图保存。")
             await page.screenshot(path=f"login_failed_{username}.png")
             return
 
@@ -162,6 +176,7 @@ async def run_one_account(account, browser):
             await sign_button.click()
             await asyncio.sleep(2)
             await handle_geetest(page, "签到阶段")
+            await asyncio.sleep(3)
             print("   🎉 签到完成！")
         else:
             print("   ✅ 已检测到【已签到】标识，不需要重复签到。")
@@ -171,6 +186,7 @@ async def run_one_account(account, browser):
         await page.screenshot(path=f"error_{username}.png")
     finally:
         await context.close()
+
 
 async def main():
     if not ACCOUNTS_JSON:
@@ -191,6 +207,7 @@ async def main():
         for account in accounts:
             await run_one_account(account, browser)
         await browser.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
