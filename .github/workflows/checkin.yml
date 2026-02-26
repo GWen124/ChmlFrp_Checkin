@@ -1,0 +1,32 @@
+name: Auto Check-in
+
+on:
+  schedule:
+    # 每天北京时间 9:00 运行 (UTC 1:00)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  check-in:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install playwright opencv-python-headless requests numpy
+        playwright install chromium
+
+    - name: Run Check-in Script
+      env:
+        # 在 GitHub 仓库 Settings -> Secrets and variables -> Actions 中添加 ACCOUNTS_JSON
+        ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
+      run: python main.py
