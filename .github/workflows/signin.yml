@@ -1,0 +1,30 @@
+name: ChmlFrp Signin
+
+on:
+  schedule:
+    # 每天 UTC 时间 01:00 (北京时间 09:00) 运行
+    - cron: '0 1 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  signin:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    - name: Run Signin Script
+      env:
+        # 在 GitHub 仓库的 Settings -> Secrets and variables -> Actions 中添加 ACCOUNTS_JSON
+        ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
+      run: python main.py
