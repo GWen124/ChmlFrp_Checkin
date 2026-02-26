@@ -7,18 +7,19 @@ import numpy as np
 from playwright.async_api import async_playwright
 
 ACCOUNTS_JSON = os.getenv("ACCOUNTS_JSON")
-LOGIN_URL = "https://panel.chmlfrp.net/login"
+# --- 修正：更新为正确的登录地址 ---
+LOGIN_URL = "https://panel.chmlfrp.net/sign"
 
 async def solve_slider(page):
     """尝试解决滑块验证码"""
     try:
         print("正在检测是否有滑块验证...")
-        # 等待滑块相关元素，超时设短一点，如果没有就是没出验证码
+        # 等待滑块相关元素，超时设短一点
         try:
-            # 常见极验类选择器，根据实际情况可能需要调整
+            # 常见极验类选择器
             bg_handle = await page.wait_for_selector(".geetest_bg, canvas.geetest_canvas_bg", timeout=5000)
         except:
-            print("未检测到滑块或无需验证 (或选择器不匹配)")
+            print("未检测到滑块或无需验证")
             return
 
         print("检测到滑块，开始处理...")
@@ -28,8 +29,8 @@ async def solve_slider(page):
         # 截图保存用于分析
         await page.screenshot(path="captcha_bg.png", clip=box)
         
-        # 简单的图像识别逻辑 (这里简化处理，核心是先跑通流程)
-        target_x = 150 # 默认值，防止识别失败报错
+        # 简单的图像识别逻辑
+        target_x = 150 # 默认值
         try:
             image = cv2.imread("captcha_bg.png")
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -38,6 +39,7 @@ async def solve_slider(page):
             contours, _ = cv2.findContours(canny, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
             for contour in contours:
                 (x, y, w, h) = cv2.boundingRect(contour)
+                # 过滤轮廓，寻找缺口
                 if 30 < w < 80 and 30 < h < 80 and x > 40:
                     target_x = x
                     break
@@ -55,6 +57,7 @@ async def solve_slider(page):
                 
                 await page.mouse.move(start_x, start_y)
                 await page.mouse.down()
+                # 模拟滑动轨迹
                 await page.mouse.move(start_x + target_x, start_y + random.randint(-5, 5), steps=30)
                 await asyncio.sleep(0.5)
                 await page.mouse.up()
@@ -72,7 +75,7 @@ async def run_account(context, account):
     page = await context.new_page()
     checkin_result = {"status": "未知", "msg": "未执行", "points": 0}
 
-    # 监听网络请求获取接口返回
+    # 监听 API 响应
     async def handle_response(response):
         if "qiandao" in response.url and response.status == 200:
             try:
@@ -93,22 +96,29 @@ async def run_account(context, account):
     page.on("response", handle_response)
 
     try:
-        print("正在打开登录页面...")
-        await page.goto(LOGIN_URL, timeout=60000) # 增加超时时间到60秒
-        
-        # 等待页面加载，如果有 Cloudflare 盾，这里会卡住
+        print(f"正在打开登录页面: {LOGIN_URL}")
+        await page.goto(LOGIN_URL, timeout=60000)
         await asyncio.sleep(5) 
 
-        # --- 调试步骤：保存页面截图 ---
-        # 如果找不到元素，我们需要看看到底显示了什么
+        # --- 新增：防止进入注册页，尝试点击“登录” ---
+        # 很多页面是 /sign 既是登录也是注册，需要切Tab
+        try:
+            # 查找包含“登录”字样的可点击元素，如果是Tab的话
+            login_tab = page.locator("text='登录'").first
+            if await login_tab.is_visible():
+                print("尝试点击'登录'切换标签...")
+                await login_tab.click()
+                await asyncio.sleep(1)
+        except:
+            pass
+
+        # 截图保存，用于调试（如果失败了，你可以去Artifacts看这张图）
         await page.screenshot(path=f"debug_page_{username}.png")
         
-        # 尝试多种选择器定位用户名输入框
+        # 填写表单
         print("正在寻找输入框...")
-        # 策略1: name属性 (最标准)
-        # 策略2: type属性 (宽泛)
-        # 策略3: placeholder (模糊匹配)
         input_found = False
+        # 常见选择器列表
         selectors = [
             "input[name='username']", 
             "input[name='user']",
@@ -121,21 +131,21 @@ async def run_account(context, account):
         for sel in selectors:
             try:
                 if await page.is_visible(sel):
-                    print(f"找到输入框，使用选择器: {sel}")
+                    print(f"找到输入框: {sel}")
                     await page.fill(sel, username)
                     input_found = True
                     break
             except: continue
             
         if not input_found:
-            raise Exception("无法找到用户名输入框，请检查 debug_page.png 截图")
+            raise Exception("无法找到用户名输入框，请检查 debug_page.png")
 
-        # 寻找密码框
         await page.fill("input[type='password']", password)
         
-        # 点击登录 (尝试多重定位)
+        # 点击登录
         print("点击登录...")
-        login_btns = ["button[type='submit']", "button:has-text('登录')", "button:has-text('Login')"]
+        # 常见登录按钮选择器
+        login_btns = ["button[type='submit']", "button:has-text('登录')", "button:has-text('Login')", ".login-btn"]
         for btn in login_btns:
              if await page.is_visible(btn):
                  await page.click(btn)
@@ -146,13 +156,15 @@ async def run_account(context, account):
             await page.wait_for_url("**/panel**", timeout=15000)
             print("登录成功跳转")
         except:
-            print("未检测到URL跳转，可能通过AJAX登录或验证失败")
+            print("未检测到URL跳转，继续尝试寻找签到按钮...")
 
         # 尝试签到
-        await asyncio.sleep(3)
-        # 查找签到按钮 (根据通常的 panel 面板)
-        # 有些面板可能在左侧菜单，有些在顶部
-        qiandao_selectors = ["text='签到'", "text='每日签到'", ".qiandao-btn", "#checkin-btn"]
+        await asyncio.sleep(5) # 多等一会加载 dashboard
+        # 保存进入后台后的截图
+        await page.screenshot(path=f"dashboard_{username}.png")
+
+        # 寻找签到按钮
+        qiandao_selectors = ["text='签到'", "text='每日签到'", ".qiandao-btn", "#checkin-btn", "a:has-text('签到')"]
         btn_clicked = False
         for q_sel in qiandao_selectors:
              try:
@@ -165,14 +177,13 @@ async def run_account(context, account):
         
         if btn_clicked:
             await solve_slider(page)
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
         else:
-            print("未找到签到按钮，可能需要手动更新选择器")
+            print("未找到签到按钮，请检查 dashboard 截图")
 
     except Exception as e:
         print(f"操作异常: {e}")
         checkin_result["msg"] = f"错误: {str(e)}"
-        # 发生错误时再次截图
         try: await page.screenshot(path=f"error_{username}.png")
         except: pass
 
@@ -192,25 +203,15 @@ async def main():
     accounts = json.loads(ACCOUNTS_JSON)
 
     async with async_playwright() as p:
-        # 添加参数以规避简单的机器人检测
         browser = await p.chromium.launch(
             headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-                '--disable-setuid-sandbox'
-            ]
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox']
         )
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
-        
-        # 注入脚本移除 webdriver 属性
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
+        # 反爬虫绕过
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         
         for account in accounts:
             await run_account(context, account)
