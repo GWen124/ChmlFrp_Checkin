@@ -5,8 +5,6 @@ import random
 import cv2
 import numpy as np
 from playwright.async_api import async_playwright
-# 修改导入方式，确保直接导入 stealth 函数
-from playwright_stealth import stealth
 
 ACCOUNTS_JSON = os.environ.get('ACCOUNTS_JSON')
 
@@ -76,9 +74,14 @@ async def run_account(account, browser):
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
     page = await context.new_page()
-    
-    # 【核心修复】使用异步兼容的 stealth 调用
-    await stealth(page)
+
+    # 【核心修复】手动注入 JS 伪装，移除对 playwright-stealth 的依赖
+    await page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        window.chrome = { runtime: {} };
+        Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+    """)
 
     try:
         print("   1. 正在访问主页...")
@@ -88,7 +91,7 @@ async def run_account(account, browser):
             await page.wait_for_selector('input[type="text"]', timeout=30000)
         except:
             if await page.get_by_text("Verify you are human").is_visible():
-                print("   🛡️ 遇到 Cloudflare 盾，尝试模拟点击验证...")
+                print("   🛡️ 遇到 Cloudflare 盾，尝试盲点验证...")
                 await page.mouse.click(300, 300)
                 await asyncio.sleep(5)
             
@@ -104,7 +107,7 @@ async def run_account(account, browser):
                 print("   ✅ 登录成功")
             except:
                 if "/home" not in page.url:
-                    print("   🚫 登录确认失败，跳过。")
+                    print("   🚫 登录确认失败。")
                     await page.screenshot(path=f"login_fail_{username}.png")
                     await context.close(); return
 
@@ -127,7 +130,7 @@ async def run_account(account, browser):
                 else:
                     print("   ⚠️ 签到状态未更新")
             else:
-                print("   ⚠️ 未找到签到按钮，可能页面未完全加载")
+                print("   ⚠️ 未找到签到按钮")
         
         await page.screenshot(path=f"final_{username}.png")
 
