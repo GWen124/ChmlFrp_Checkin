@@ -1,0 +1,41 @@
+name: Auto Signin
+
+on:
+  schedule:
+    # 北京时间每天上午 9 点 (UTC 1:00)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  signin:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        # 安装 Playwright 及其浏览器内核
+        playwright install chromium
+        playwright install-deps
+
+    - name: Run Signin Script
+      env:
+        # 这里引用 GitHub Secrets
+        ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
+      run: python main.py
+
+    - name: Upload Debug Screenshots
+      if: always() # 无论成功失败都上传截图，方便调试
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-screenshots
+        path: "*.png"
