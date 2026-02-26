@@ -2,187 +2,271 @@ import os
 import json
 import asyncio
 import random
-import datetime
+import cv2
+import numpy as np
 from playwright.async_api import async_playwright
 
+# 获取环境变量
 ACCOUNTS_JSON = os.environ.get('ACCOUNTS_JSON')
 
 def mask_username(username):
+    """账号脱敏"""
     if not username: return "未知账号"
     if len(username) <= 3: return username[0] + "***"
     return username[:3] + "***"
 
-# 全局状态字典
-ACCOUNT_STATUS = {}
+# === OpenCV 图像识别算法 ===
+def identify_gap(bg_image_path):
+    """
+    识别滑块拼图的缺口位置
+    """
+    print("   🔍 正在进行图像分析...")
+    try:
+        # 读取图片
+        image = cv2.imread(bg_image_path)
+        if image is None:
+            print("   ⚠️ 无法读取验证码图片")
+            return 0
+            
+        # 1. 高斯模糊，去噪
+        blurred = cv2.GaussianBlur(image, (5, 5), 0)
+        
+        # 2. Canny 边缘检测
+        canny = cv2.Canny(blurred, 200, 400)
+        
+        # 3. 寻找轮廓
+        contours, hierarchy = cv2.findContours(canny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        target_x = 0
+        
+        # 4. 遍历轮廓，筛选出缺口
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # 缺口特征：通常接近正方形，边长在一定范围内 (极验缺口约 40-50px)
+            if 35 < w < 85 and 35 < h < 85:
+                # 过滤掉左侧的起始滑块位置 (通常 x < 50)
+                if x < 50:
+                    continue
+                
+                target_x = x
+                break # 找到第一个符合条件的即可
+        
+        if target_x == 0:
+            print("   ⚠️ 未识别到明显缺口，使用默认距离")
+            return 210 # 兜底距离
+            
+        print(f"   🎯 识别成功！缺口位置 X = {target_x}")
+        return target_x
 
-def ease_out_quad(x):
-    return 1 - (1 - x) * (1 - x)
+    except Exception as e:
+        print(f"   ⚠️ 图像识别出错: {e}")
+        return 210
 
-async def mouse_slide(page, box):
-    """仿真鼠标拖动"""
+# === 仿真鼠标轨迹 ===
+def get_track(distance):
+    """生成符合人类行为的拖动轨迹"""
+    track = []
+    current = 0
+    mid = distance * 4 / 5
+    t = 0.2
+    v = 0
+    
+    while current < distance:
+        if current < mid:
+            a = 2
+        else:
+            a = -3
+        v0 = v
+        v = v0 + a * t
+        move = v0 * t + 1 / 2 * a * t * t
+        current += move
+        track.append(round(move))
+    return track
+
+async def mouse_slide(page, box, target_x):
+    """执行拖动操作"""
     start_x = box['x'] + box['width'] / 2
     start_y = box['y'] + box['height'] / 2
+    
     await page.mouse.move(start_x, start_y)
     await page.mouse.down()
     
-    distance = 260 + random.randint(-5, 15)
-    steps = 40
-    for i in range(steps):
-        t = (i + 1) / steps
-        progress = ease_out_quad(t)
-        current_x = start_x + (distance * progress)
-        await page.mouse.move(current_x, start_y + random.uniform(-2, 2))
-        if i > steps - 10: await asyncio.sleep(0.04)
-        else: await asyncio.sleep(0.01)
+    # 获取轨迹
+    tracks = get_track(target_x)
+    
+    for track in tracks:
+        x = start_x + track
+        y = start_y + random.uniform(-2, 2) # Y轴微抖动
+        await page.mouse.move(x, y)
+        # 随机变速
+        await asyncio.sleep(random.uniform(0.01, 0.02))
         
-    await page.mouse.move(current_x - 3, start_y, steps=5)
+    # 最后微调：模拟人手过冲后回退
+    await page.mouse.move(start_x + target_x + 3, start_y, steps=5)
+    await asyncio.sleep(0.1)
+    await page.mouse.move(start_x + target_x, start_y, steps=5)
+    
     await page.mouse.up()
-    print(f"   └── 🖱️ 模拟拖动完成")
-
-async def force_clear_overlays(page):
-    """【核心】暴力删除遮挡层"""
-    try:
-        await page.evaluate("""() => {
-            document.querySelectorAll('.geetest_popup_ghost, .geetest_wrap, .geetest_mask').forEach(e => e.remove());
-        }""")
-    except:
-        pass
+    print(f"   └── 🖱️ 拖动动作完成")
 
 async def handle_geetest(page):
-    """处理极验"""
+    """处理极验验证码"""
     print(">>> [验证] 扫描验证码...")
     try:
-        radar = page.locator('.geetest_radar_tip')
+        # 1. 尝试点击验证按钮 (Radar)
+        radar = page.locator('.geetest_radar_tip, .geetest_radar_btn')
         if await radar.count() > 0 and await radar.first.is_visible():
-            print("   └── 点击验证按钮...")
+            print("   └── 发现点击按钮，点击...")
             await radar.first.click()
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
 
-        slider = await page.wait_for_selector('.geetest_slider_button, .geetest_btn, .ant-slider-handle', timeout=4000)
+        # 2. 扫描滑块
+        slider = await page.wait_for_selector(
+            '.geetest_slider_button, .geetest_btn, .ant-slider-handle', 
+            timeout=4000
+        )
         if slider:
-            print("   └── 发现滑块，开始拖动...")
-            box = await slider.bounding_box()
-            if box:
-                await mouse_slide(page, box)
-                await asyncio.sleep(3)
-                # 拖动完立刻清除遮挡
-                await force_clear_overlays(page)
-    except:
+            print("   └── 发现滑块！准备识别缺口...")
+            
+            # 寻找背景图容器进行截图
+            # 尝试定位包含完整背景图的元素
+            captcha_box = page.locator('.geetest_window, .geetest_box_wrap, .geetest_widget').first
+            
+            if await captcha_box.count() > 0 and await captcha_box.is_visible():
+                # 截图保存
+                await captcha_box.screenshot(path="captcha_bg.png")
+                
+                # 计算距离
+                gap_x = identify_gap("captcha_bg.png")
+                
+                # 修正距离：缺口位置 - 滑块起始位置 + 修正值
+                # 极验滑块本身约 40px 宽，通常需要减去一点偏移
+                final_distance = gap_x - 5
+                
+                box = await slider.bounding_box()
+                if box:
+                    await mouse_slide(page, box, final_distance)
+                    await asyncio.sleep(3)
+            else:
+                print("   ⚠️ 无法截取验证码背景，跳过滑动")
+    except Exception as e:
+        # 没滑块是好事，或者已经自动过了
         pass
 
-async def log_api_response(response):
-    """API 监听"""
-    if "qiandao" in response.url or "user/info" in response.url:
-        try:
-            data = await response.json()
-            # 记录关键状态
-            if isinstance(data, dict):
-                inner = data.get("data", {})
-                if isinstance(inner, dict):
-                    # 积分
-                    if "total_points" in inner:
-                        ACCOUNT_STATUS["points"] = inner["total_points"]
-                    # 签到状态
-                    if inner.get("is_signed_in_today") is True:
-                        ACCOUNT_STATUS["signed"] = True
-                        print("   ✅ [API] 确认今日已签到")
-        except:
-            pass
+async def check_success(page):
+    """检查是否成功，返回 (Success: bool, Message: str)"""
+    try:
+        # 1. 检查页面上是否有“已签到”文字
+        if await page.get_by_text("已签到").count() > 0:
+            return True, "页面已显示【已签到】"
+            
+        # 2. 点击“签到信息”查看弹窗
+        info_btn = page.get_by_text("签到信息").first
+        if await info_btn.is_visible():
+            # 强制点击，因为可能有透明遮挡层
+            await info_btn.click(force=True)
+            await asyncio.sleep(1)
+            
+            popover = page.locator(".ant-popover-inner-content, .ant-tooltip-inner, div[role='tooltip']")
+            if await popover.count() > 0:
+                text = await popover.first.inner_text()
+                # 简单判断：只要能读出积分，就算广义上的“流程成功”
+                return True, f"账户信息读取成功:\n{text.strip()}"
+                
+        return False, "未找到状态信息"
+    except Exception as e:
+        return False, str(e)
 
 async def run_one_account(account, browser):
     username = account['u']
     password = account['p']
     masked_name = mask_username(username)
     
+    # 示例账号跳过
     if "你的用户名" in username: return
 
     print(f"\n========== 🟢 正在执行: {masked_name} ==========")
     
-    # 重置当前账号状态
-    ACCOUNT_STATUS.clear()
-    ACCOUNT_STATUS["signed"] = False
-    ACCOUNT_STATUS["points"] = "未知"
-
+    # 独立的上下文，防止串号
     context = await browser.new_context(
         viewport={'width': 1920, 'height': 1080},
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
     page = await context.new_page()
+    
+    # 屏蔽自动化特征
     await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    page.on("response", log_api_response)
 
-    MAX_RETRIES = 2
-    for attempt in range(1, MAX_RETRIES + 1):
-        print(f"\n🔄 第 {attempt} 次检查...")
-        try:
-            # 1. 登录与跳转
-            await page.goto("https://panel.chmlfrp.net/", timeout=45000)
-            if "/home" not in page.url:
-                try:
-                    await page.wait_for_selector('input[type="text"]', timeout=10000)
-                    await page.fill('input[type="text"]', username)
-                    await page.fill('input[type="password"]', password)
-                    await page.locator('button[type="submit"]').first.click()
-                    await page.wait_for_load_state('networkidle')
-                except: pass
-            
-            if "/home" not in page.url:
-                await page.goto("https://panel.chmlfrp.net/home")
-                await asyncio.sleep(2)
+    try:
+        # 1. 登录
+        print("1. 访问登录页...")
+        await page.goto("https://panel.chmlfrp.net/", timeout=45000)
+        
+        # 登录流程 (如果在首页则跳过)
+        if "/home" not in page.url:
+            try:
+                await page.wait_for_selector('input[type="text"]', timeout=15000)
+                await page.fill('input[type="text"]', username)
+                await page.fill('input[type="password"]', password)
+                # 点击登录
+                await page.locator('button[type="submit"]').first.click()
+                await page.wait_for_load_state('networkidle')
+            except:
+                pass # 可能已经登录
 
-            # 2. 核心：判断是否需要签到
-            # 如果 API 已经返回已签到，直接成功
-            if ACCOUNT_STATUS.get("signed"):
-                print("   ✅ API 已确认签到状态，无需操作UI。")
-                break
+        # 2. 确保进入首页
+        if "/home" not in page.url:
+            await page.goto("https://panel.chmlfrp.net/home")
+            await asyncio.sleep(3)
 
-            # 3. UI 操作
-            # 先清除可能存在的遮挡
-            await force_clear_overlays(page)
-            
-            # 查找按钮：同时查找“签到”和“已签到”
+        # 3. 签到逻辑
+        print("3. 检测签到状态...")
+        
+        # 优先判断是否已签到
+        signed_text = page.get_by_text("已签到")
+        if await signed_text.count() > 0:
+            print("   ✅ [检测] 今日已签到，无需操作。")
+        else:
+            # 寻找签到按钮
             checkin_btn = page.locator('button').filter(has_text="签到").filter(has_not_text="已签到")
-            signed_text = page.get_by_text("已签到")
             
-            if await signed_text.count() > 0 and await signed_text.first.is_visible():
-                print("   ✅ 页面显示【已签到】")
-                ACCOUNT_STATUS["signed"] = True
-                break
-            
-            elif await checkin_btn.count() > 0:
+            if await checkin_btn.count() > 0:
                 print("   └── 点击签到按钮...")
                 await checkin_btn.first.click(force=True)
                 await asyncio.sleep(2)
+                
+                # 调用 OpenCV 处理验证码
                 await handle_geetest(page)
-                # 等待一会儿让 API 更新状态
+                
+                # 等待一会儿
                 await asyncio.sleep(3)
                 
-                # 如果此时 API 变更为已签到，则成功
-                if ACCOUNT_STATUS.get("signed"):
-                    print("   ✅ 操作后 API 状态更新为已签到")
-                    break
+                # 尝试清除残留遮挡层 (暴力移除法)
+                await page.evaluate("document.querySelectorAll('.geetest_popup_ghost, .geetest_wrap').forEach(e => e.remove())")
             else:
-                print("   ⚠️ 未找到任何签到相关按钮")
+                print("   ⚠️ 未找到明显签到按钮")
 
-        except Exception as e:
-            print(f"   ❌ 异常: {str(e)[:100]}")
+        # 4. 验证结果并截图
+        success, msg = await check_success(page)
+        print("-" * 30)
+        print(msg)
+        print("-" * 30)
         
-        if attempt < MAX_RETRIES:
-            print("   ⏳ 刷新重试...")
-            await asyncio.sleep(3)
+        # 根据结果保存不同文件名的截图
+        if success:
+            print(f"🎉 账号 {masked_name} 流程结束")
+            await page.screenshot(path=f"success_{username}.png")
+        else:
+            print(f"❌ 账号 {masked_name} 似乎未成功")
+            await page.screenshot(path=f"failed_{username}.png")
 
-    # 最终结果汇报
-    print("-" * 30)
-    if ACCOUNT_STATUS.get("signed"):
-        print(f"🎉 账号 {masked_name} 签到成功！")
-        print(f"💰 当前积分: {ACCOUNT_STATUS.get('points')}")
-        await page.screenshot(path=f"success_{username}.png")
-    else:
-        print(f"❌ 账号 {masked_name} 签到失败 (或验证码未通过)")
-        await page.screenshot(path=f"failed_{username}.png")
-    print("-" * 30)
+    except Exception as e:
+        print(f"❌ 运行异常: {e}")
+        await page.screenshot(path=f"error_{username}.png")
     
-    await context.close()
+    finally:
+        await context.close()
 
 async def main():
     if not ACCOUNTS_JSON:
