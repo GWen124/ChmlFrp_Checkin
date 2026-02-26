@@ -122,4 +122,107 @@ async def run_one_account(account, browser):
     try:
         # --- 步骤1：登录环节 (加强版) ---
         print("1. 访问登录页...")
-        await page.goto("https://panel.chmlfrp.net/", timeout
+        await page.goto("https://panel.chmlfrp.net/", timeout=60000)
+        
+        # 检测是否卡在 Cloudflare
+        try:
+            # 增加等待时间，专门等输入框
+            await page.wait_for_selector('input[type="text"], input[name="username"]', timeout=20000)
+        except:
+            print("   ⚠️ 警告：未找到输入框，可能卡在 Cloudflare 或网页加载极慢！截图保存。")
+            await page.screenshot(path=f"login_stuck_{username}.png")
+            # 尝试盲点一下可能存在的cf验证框
+            await page.mouse.click(300, 300) 
+            # 这里的 return 会让脚本放弃当前账号，不再做无用功
+            print("   🚫 登录环境异常，跳过此账号。")
+            await context.close()
+            return
+
+        # 正常输入流程
+        if "/home" not in page.url:
+            print("   👉 输入账号密码...")
+            await page.fill('input[type="text"], input[name="username"]', username)
+            await page.fill('input[type="password"]', password)
+            
+            # 点击登录
+            login_btn = page.locator('button[type="submit"], button:has-text("登录")').first
+            await login_btn.click()
+            
+            # 【新增】登录也可能触发验证码！
+            await asyncio.sleep(2)
+            await handle_geetest(page, "登录阶段")
+            
+            # 等待跳转
+            try:
+                await page.wait_for_url("**/home", timeout=15000)
+                print("   ✅ 登录成功，跳转至首页。")
+            except:
+                print("   ⚠️ 登录后未跳转，再次检查...")
+
+        # --- 步骤2：确认进入系统 ---
+        if "/home" not in page.url:
+            await page.goto("https://panel.chmlfrp.net/home")
+            await asyncio.sleep(3)
+        
+        # 终极检查：是否真的进来了？找“注销”或“签到”关键字
+        if await page.locator("body").get_by_text("签到").count() == 0 and await page.locator("body").get_by_text("注销").count() == 0:
+             print("   ❌ 严重：页面未加载出面板内容，可能登录失败。截图保存。")
+             await page.screenshot(path=f"login_failed_{username}.png")
+             await context.close()
+             return
+
+        # --- 步骤3：签到环节 ---
+        print("3. 执行签到检测...")
+        
+        # 检查是否已签到
+        signed_mark = page.locator("text=已签到")
+        if await signed_mark.count() > 0:
+            print("   ✅ 检测到【已签到】标识，任务完成。")
+        else:
+            # 找签到按钮
+            checkin_btn = page.locator('button').filter(has_text="签到").filter(has_not_text="已签到").first
+            
+            if await checkin_btn.is_visible():
+                print("   👉 点击签到...")
+                await checkin_btn.click(force=True)
+                await asyncio.sleep(2)
+                
+                # 处理签到验证码
+                await handle_geetest(page, "签到阶段")
+                
+                await asyncio.sleep(3)
+                
+                # 再次检查结果
+                if await signed_mark.count() > 0:
+                    print("   🎉 签到成功！")
+                    await page.screenshot(path=f"success_{username}.png")
+                else:
+                    print("   ⚠️ 签到后状态未更新，可能验证失败。")
+                    await page.screenshot(path=f"checkin_fail_{username}.png")
+            else:
+                print("   ⚠️ 未找到可点击的签到按钮。")
+
+    except Exception as e:
+        print(f"❌ 运行异常: {e}")
+        await page.screenshot(path=f"error_{username}.png")
+    
+    finally:
+        await context.close()
+
+async def main():
+    if not ACCOUNTS_JSON:
+        print("错误: 未设置 ACCOUNTS_JSON")
+        return
+
+    accounts = json.loads(ACCOUNTS_JSON)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+        )
+        for account in accounts:
+            await run_one_account(account, browser)
+        await browser.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
