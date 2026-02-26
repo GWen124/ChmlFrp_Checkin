@@ -8,27 +8,19 @@ import re
 from playwright.async_api import async_playwright
 
 ACCOUNTS_JSON = os.getenv("ACCOUNTS_JSON")
-# 登录页
 LOGIN_URL = "https://panel.chmlfrp.net/sign"
-# 面板首页（签到按钮通常在这里）
 DASHBOARD_URL = "https://panel.chmlfrp.net/"
-
-def mask_username(username):
-    if not username: return "***"
-    if len(username) <= 2: return username + "***"
-    return username[:2] + "****" + username[-1:]
 
 async def solve_slider(page):
     try:
-        print("   >> 正在检测滑块验证...")
+        print("      >> [滑块] 正在检测...")
         try:
-            # 增加等待时间，防止滑块加载慢
             bg_handle = await page.wait_for_selector(".geetest_bg, canvas.geetest_canvas_bg", timeout=5000)
         except:
-            print("   >> 未检测到滑块，跳过")
+            print("      >> [滑块] 未出现，跳过")
             return
 
-        print("   >> 发现滑块，开始破解...")
+        print("      >> [滑块] 发现！开始破解...")
         box = await bg_handle.bounding_box()
         if not box: return
 
@@ -46,7 +38,7 @@ async def solve_slider(page):
                 if 30 < w < 80 and 30 < h < 80 and x > 40:
                     target_x = x
                     break
-            print(f"   >> 识别缺口位置: {target_x}")
+            print(f"      >> [滑块] 识别缺口位置: {target_x}")
         except: pass
 
         knob = await page.query_selector(".geetest_btn, .geetest_slider_button")
@@ -61,142 +53,167 @@ async def solve_slider(page):
                 await page.mouse.move(start_x + target_x, start_y + random.randint(-5, 5), steps=30)
                 await asyncio.sleep(0.5)
                 await page.mouse.up()
-                print("   >> 滑动操作完成")
+                print("      >> [滑块] 动作完成")
         await asyncio.sleep(4)
     except Exception as e:
-        print(f"   >> 滑块处理异常: {e}")
+        print(f"      >> [滑块] 异常: {e}")
 
-async def run_account(context, account):
+async def run_account(context, account, account_index):
     username = account.get("username")
     password = account.get("password")
-    masked_name = mask_username(username)
-    print(f"\n========== 开始处理账号: {masked_name} ==========")
+    
+    # 彻底隐藏账号，使用序号
+    account_label = f"账号 {account_index}"
+    print(f"\n========== 开始处理 {account_label} ==========")
 
     page = await context.new_page()
     checkin_result = {"status": "未知", "msg": "未执行", "points": "0"}
     
-    # 监听 API 响应（这是最准确的数据源）
+    # --- API 监听 (最强辅助) ---
     async def handle_response(response):
-        # 监听 /qiandao 接口（签到动作）
+        # 1. 监听签到动作结果
         if "qiandao" in response.url and response.request.method == "POST" and response.status == 200:
             try:
                 data = await response.json()
-                print(f"   [API] 捕获签到响应: {data}")
+                print(f"   [API] 捕获签到结果: {data.get('msg')}")
                 checkin_result["msg"] = data.get("msg", "API无消息")
-                if data.get("code") == 200:
+                code = data.get("code")
+                if code == 200:
                     checkin_result["status"] = "成功"
-                    # 正则提取积分
                     match = re.search(r'获得(\d+)', str(data.get("msg")))
                     if match: checkin_result["points"] = match.group(1)
-                elif data.get("code") == 409: # 409 Conflict 通常是重复签到
+                elif code == 409:
                     checkin_result["status"] = "已签到"
             except: pass
         
-        # 监听 /qiandao_info 接口（查询信息）
+        # 2. 监听页面加载时的状态查询
         if "qiandao_info" in response.url and response.status == 200:
             try:
                 data = await response.json()
-                # print(f"   [API] 捕获状态信息: {data}") # 调试用，平时注释防止日志过长
                 d = data.get("data", {})
+                # 如果 API 直接告诉我们今天签过了，那就稳了
                 if d and d.get("is_signed_in_today") is True:
                      checkin_result["status"] = "已签到"
-                     checkin_result["msg"] = "API检测到今日已签"
+                     checkin_result["msg"] = "API检测: 今日已签"
                      checkin_result["points"] = str(d.get("total_points", 0))
+                     print(f"   [API] 查询发现今日已签到，积分: {checkin_result['points']}")
             except: pass
 
     page.on("response", handle_response)
 
     try:
-        print(f"1. 打开登录页: {LOGIN_URL}")
+        print(f"1. 打开登录页...")
         await page.goto(LOGIN_URL, timeout=60000)
         
-        # 确保在登录 Tab
+        # 切 Tab
         try:
             login_tab = page.locator("text='登录'").first
             if await login_tab.is_visible(): await login_tab.click()
         except: pass
 
-        print("2. 填写表单...")
+        print("2. 正在登录...")
         await page.fill("input[placeholder*='用户'], input[placeholder*='账号'], input[name='username']", username)
         await page.fill("input[type='password']", password)
         
-        print("3. 点击登录，等待 API 回应...")
-        # 这里的关键是：点击登录后，我们要等待 /login 接口返回，确保登录真的成功了
-        async with page.expect_response(lambda response: "login" in response.url and response.status == 200, timeout=15000) as response_info:
-            await page.click("button:has-text('登录'), .login-btn, button[type='submit']")
+        # 增加登录超时时间到 30s
+        try:
+            async with page.expect_response(lambda response: "login" in response.url, timeout=30000) as response_info:
+                await page.click("button:has-text('登录'), .login-btn, button[type='submit']")
+            print("   >> 登录请求发送成功")
+        except:
+            print("   >> 警告: 登录接口响应超时，可能已登录或网络卡顿，继续尝试...")
         
-        print("   >> 登录接口返回 200，登录成功！")
-        
-        # --- 强制跳转 ---
-        print(f"4. 强制跳转到面板首页: {DASHBOARD_URL}")
+        print(f"3. 前往面板: {DASHBOARD_URL}")
         await page.goto(DASHBOARD_URL)
         
-        print("5. 等待页面加载关键数据 (qiandao_info)...")
-        # 你的抓包显示，页面加载好会请求这个接口。等到这个包，说明页面元素肯定出来了
+        # --- 关键修复：页面假死救星 ---
+        print("4. 等待数据加载...")
         try:
-            await page.wait_for_response(lambda res: "qiandao_info" in res.url, timeout=15000)
-            print("   >> 页面数据加载完毕！")
+            # 等待 qiandao_info 接口，或者页面变得空闲
+            # 如果 10秒没等到，说明页面可能卡住了
+            await page.wait_for_response(lambda res: "qiandao_info" in res.url, timeout=10000)
+            print("   >> 页面数据加载正常")
         except:
-            print("   >> 警告：等待数据加载超时，尝试硬找按钮...")
-
+            print("   >> ⚠️ 页面似乎卡住了(未检测到数据包)，尝试刷新页面...")
+            await page.reload()
+            await asyncio.sleep(5)
+            # 刷新后再次等待网络空闲
+            try: await page.wait_for_load_state('networkidle', timeout=10000)
+            except: pass
+        
         await asyncio.sleep(3)
-        await page.screenshot(path=f"dashboard_{username}.png")
 
-        # --- 寻找按钮逻辑升级 ---
-        print("6. 开始寻找签到按钮...")
-        
-        # 你的截图里按钮文字是 "签到"，旁边是 "签到信息"
-        # 策略A: 找 "签到" 按钮
-        qiandao_btn = page.locator("button:has-text('签到'), a:has-text('签到'), div[role='button']:has-text('签到')").first
-        
-        # 策略B: 如果找不到，找 "签到信息" 的兄弟元素 (针对你的截图优化)
-        if not await qiandao_btn.is_visible():
-            print("   >> 策略A失败，尝试策略B (寻找'签到信息'旁边的按钮)...")
-            # 找到包含"签到信息"的元素的父级，然后在父级里找其他按钮
-            qiandao_btn = page.locator("text='签到信息'").locator("xpath=..").locator("button, a, div[role='button']").first
-
-        if await qiandao_btn.is_visible():
-            btn_text = await qiandao_btn.text_content()
-            print(f"   >> 找到按钮！文字内容: [{btn_text.strip()}]")
+        # 如果 API 已经告诉我们签到了，就不用费劲找按钮了
+        if checkin_result["status"] == "已签到":
+            print("   >> 根据 API 信息，跳过按钮查找")
+        else:
+            print("5. 寻找按钮...")
+            # 你的截图显示按钮文字可能是“签到”或者“签到信息”旁边
+            # 扩大搜索范围，NaivUI 的按钮结构比较深
+            qiandao_btn = None
             
-            # 悬停检测是否已签到（根据截图里的tooltip）
-            await qiandao_btn.hover()
-            await asyncio.sleep(1)
-            if await page.locator("text='您今天已经签到过啦'").is_visible():
-                 print("   >> 提示框出现：今天已签到")
-                 checkin_result["status"] = "已签到"
-            else:
-                if "已签到" not in checkin_result["status"]:
+            # 尝试 1: 直接找文本
+            candidates = [
+                page.locator("button:has-text('签到')"),
+                page.locator(".n-button:has-text('签到')"),
+                page.locator("div:has-text('签到')[role='button']")
+            ]
+            
+            for loc in candidates:
+                if await loc.count() > 0 and await loc.first.is_visible():
+                    qiandao_btn = loc.first
+                    print("   >> 找到按钮 (策略1)")
+                    break
+            
+            # 尝试 2: 如果没找到，尝试在“签到信息”附近找
+            if not qiandao_btn:
+                info_text = page.locator("text='签到信息'")
+                if await info_text.count() > 0:
+                    # 找它的兄弟节点（通常是前一个按钮）
+                    # 假设结构是 [签到] [签到信息]
+                    # 我们找 "签到信息" 父级的子元素里的按钮
+                    parent = info_text.first.locator("xpath=..")
+                    siblings = parent.locator("button")
+                    count = await siblings.count()
+                    for i in range(count):
+                        btn_text = await siblings.nth(i).text_content()
+                        if "签到" in btn_text and "信息" not in btn_text:
+                            qiandao_btn = siblings.nth(i)
+                            print("   >> 找到按钮 (策略2: 兄弟节点)")
+                            break
+
+            if qiandao_btn:
+                # 悬停检测
+                await qiandao_btn.hover()
+                await asyncio.sleep(1)
+                
+                if await page.locator("text='您今天已经签到过啦'").is_visible():
+                    checkin_result["status"] = "已签到"
+                    checkin_result["msg"] = "UI提示: 已签到"
+                else:
                     print("   >> 点击签到...")
                     await qiandao_btn.click()
                     await solve_slider(page)
-                    await asyncio.sleep(5) # 等待结果刷新
-        else:
-            print("❌ 致命错误：依然找不到按钮！")
-            checkin_result["msg"] = "按钮隐身"
-            
-            # --- 尸检报告：打印页面 HTML 结构供调试 ---
-            print("\n[HTML DUMP START] ---------------------")
-            # 只打印 body 内的前 2000 个字符，防止日志爆炸，重点看结构
-            content = await page.inner_html("body") 
-            # 简单的清理，去掉脚本内容，只留标签
-            clean_content = re.sub(r'<script.*?>.*?</script>', '', content, flags=re.DOTALL)
-            clean_content = re.sub(r'<style.*?>.*?</style>', '', clean_content, flags=re.DOTALL)
-            print(clean_content[:3000]) 
-            print("[HTML DUMP END] -----------------------\n")
+                    await asyncio.sleep(5)
+            else:
+                print("❌ 依然找不到按钮，可能是 API 延迟或页面布局变更")
+                # 最后的补救：如果积分已经有了，那也算成功
+                if checkin_result["points"] != "0":
+                     checkin_result["status"] = "成功"
+                     checkin_result["msg"] = "未点按钮但积分已更新"
+                else:
+                     checkin_result["msg"] = "找不到按钮"
 
     except Exception as e:
         print(f"❌ 运行异常: {str(e)[:100]}")
-        checkin_result["msg"] = "脚本错误"
-        try: await page.screenshot(path=f"error_{username}.png")
-        except: pass
+        checkin_result["msg"] = "脚本执行出错"
 
     finally:
         await page.close()
 
-    # 优先信任 API 拦截到的状态
+    # 最终状态判定
     status_icon = "✅" if checkin_result["status"] in ["成功", "已签到"] else "❌"
-    log_msg = f"账号 [{masked_name}] {status_icon} | 状态: {checkin_result['status']} | 消息: {checkin_result['msg']} | 积分: {checkin_result['points']}"
+    log_msg = f"{account_label} {status_icon} | 状态: {checkin_result['status']} | 消息: {checkin_result['msg']} | 积分: {checkin_result['points']}"
     print(log_msg)
     
     if "GITHUB_STEP_SUMMARY" in os.environ:
@@ -213,18 +230,19 @@ async def main():
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
         
-        for account in accounts:
-            # 使用桌面分辨率，方便定位
+        # 使用 enumerate 获取序号 (index 从 0 开始，所以显示时 +1)
+        for index, account in enumerate(accounts):
             context = await browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
             
-            await run_account(context, account)
+            # 传入 index + 1
+            await run_account(context, account, index + 1)
             await context.close()
             
-            delay = random.randint(10, 20)
+            delay = random.randint(15, 25)
             print(f"等待 {delay} 秒...")
             await asyncio.sleep(delay)
             
