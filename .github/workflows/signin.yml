@@ -6,6 +6,11 @@ on:
     - cron: '0 1 * * *'
   workflow_dispatch: # 允许手动触发
 
+# 必须添加这个权限设置，否则无法删除旧的运行记录
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   signin:
     runs-on: ubuntu-latest
@@ -28,3 +33,12 @@ jobs:
         # 在 GitHub 仓库的 Settings -> Secrets and variables -> Actions 中添加 ACCOUNTS_JSON
         ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
       run: python main.py
+
+    # 新增：只保留最近 7 条运行记录
+    - name: Delete old workflow runs
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        retain_days: 0
+        keep_minimum_runs: 7
