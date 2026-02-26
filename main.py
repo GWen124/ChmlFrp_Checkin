@@ -5,7 +5,8 @@ import random
 import cv2
 import numpy as np
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+# 修改导入方式
+from playwright_stealth import stealth
 
 ACCOUNTS_JSON = os.environ.get('ACCOUNTS_JSON')
 
@@ -39,7 +40,7 @@ async def mouse_slide(page, slider_btn, distance):
     steps = 45
     for i in range(steps):
         t = (i + 1) / steps
-        move = distance * (1 - (1 - t)**3) # 使用更平滑的 cubic 缓动
+        move = distance * (1 - (1 - t)**3)
         await page.mouse.move(start_x + move, start_y + random.uniform(-3, 3))
         await asyncio.sleep(random.uniform(0.005, 0.015))
     await page.mouse.move(start_x + distance + 5, start_y, steps=5)
@@ -75,21 +76,19 @@ async def run_account(account, browser):
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
     page = await context.new_page()
-    # 注入 Stealth 伪装，绕过反爬
-    await stealth_async(page)
+    # 使用修正后的 stealth 调用
+    await stealth(page)
 
     try:
         print("   1. 正在访问主页...")
-        # 增加跳转等待，应对 Cloudflare 盾
         await page.goto("https://panel.chmlfrp.net/", timeout=90000, wait_until="networkidle")
         
-        # 如果还在加载或遇到挑战，等待手动输入框出现
         try:
             await page.wait_for_selector('input[type="text"]', timeout=30000)
         except:
             if await page.get_by_text("Verify you are human").is_visible():
                 print("   🛡️ 遇到 Cloudflare 盾，尝试模拟点击验证...")
-                await page.mouse.click(300, 300) # 尝试点击验证框位置
+                await page.mouse.click(300, 300)
                 await asyncio.sleep(5)
             
         if "/home" not in page.url:
@@ -141,11 +140,10 @@ async def main():
     if not ACCOUNTS_JSON: return print("错误: 未设置 ACCOUNTS_JSON")
     accounts = json.loads(ACCOUNTS_JSON)
     async with async_playwright() as p:
-        # 启动 Chromium
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         for acc in accounts: 
             await run_account(acc, browser)
-            await asyncio.sleep(5) # 账号间停顿
+            await asyncio.sleep(5)
         await browser.close()
 
 if __name__ == "__main__":
