@@ -9,10 +9,8 @@ import sys
 ACCOUNTS_ENV = os.environ.get('ACCOUNTS_JSON')
 
 def mask_account(index, username):
-    if not username: return f"账号{index+1}"
-    if len(username) > 4:
-        return f"{username[:2]}***{username[-2:]}"
-    return f"账号{index+1}"
+    # 强制显示为 账号1, 账号2... 不再显示用户名
+    return f"账号{index + 1}"
 
 def create_scraper():
     # 模拟 Windows Chrome
@@ -30,7 +28,7 @@ def run_signin(index, username, password):
     print(f"\n[-] 开始处理: {label}")
 
     # === 配置区域 ===
-    # 将重试次数提高到 15 次，应对 WARP 的不稳定性
+    # 将重试次数保持在 15 次，应对 WARP 的不稳定性
     MAX_RETRIES = 15 
     # ================
     
@@ -59,10 +57,10 @@ def run_signin(index, username, password):
             if data.get("code") == 200:
                 token = data["data"]["usertoken"]
                 scraper.headers.update({"Authorization": f"Bearer {token}"})
-                print(f"[+] 登录成功 (第 {attempt+1} 次尝试)")
+                print(f"[+] {label} 登录成功 (第 {attempt+1} 次尝试)")
                 break 
             else:
-                print(f"[x] 登录失败: {data.get('msg')}")
+                print(f"[x] {label} 登录失败: {data.get('msg')}")
                 return # 账号密码错误，直接退出，不重试
 
         except Exception as e:
@@ -110,13 +108,13 @@ def run_signin(index, username, password):
             msg = data.get("msg")
 
             if code == 200:
-                print(f"[√] 签到成功! 消息: {msg}")
+                print(f"[√] {label} 签到成功! 消息: {msg}")
                 return
             elif code == 409:
-                print(f"[-] 今日已签到 (提示: {msg})")
+                print(f"[-] {label} 今日已签到 (提示: {msg})")
                 return
             else:
-                print(f"[x] 签到失败: {msg} (Code: {code})")
+                print(f"[x] {label} 签到失败: {msg} (Code: {code})")
                 return
 
         except Exception as e:
