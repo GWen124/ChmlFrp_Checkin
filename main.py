@@ -1,4 +1,3 @@
-# main.py
 import requests
 import json
 import os
@@ -8,12 +7,12 @@ import random
 # 从环境变量获取账号信息
 ACCOUNTS_ENV = os.environ.get('ACCOUNTS_JSON')
 
-# 模拟手机端 UA (与抓包保持一致)
+# 修改为 macOS (Intel) + Chrome 的 User-Agent
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 26_3_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/143.0.7499.151 Mobile/15E148 Safari/604.1",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Content-Type": "application/json",
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh-Hans;q=0.9",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Origin": "https://panel.chmlfrp.net",
     "Referer": "https://panel.chmlfrp.net/"
 }
@@ -30,7 +29,7 @@ def safe_json_parse(response, label, action_name):
     except json.JSONDecodeError:
         print(f"[!] {label} {action_name}异常: 响应不是合法的 JSON")
         print(f"    状态码: {response.status_code}")
-        # 截取前 200 个字符，防止 HTML 太长刷屏，让你看清是不是被 WAF 拦截了
+        # 截取前 200 个字符，防止 HTML 太长刷屏
         print(f"    响应内容(前200字符): {response.text[:200]}")
         return None
 
@@ -49,7 +48,8 @@ def run_signin(index, username, password):
     }
     
     try:
-        login_res = session.post(login_url, json=login_payload, timeout=15)
+        # 适当增加了超时时间到 30 秒，防止网络波动
+        login_res = session.post(login_url, json=login_payload, timeout=30)
         login_data = safe_json_parse(login_res, account_label, "登录")
         
         if not login_data:
@@ -68,13 +68,13 @@ def run_signin(index, username, password):
         print(f"[!] {account_label} 登录请求出错: {e}")
         return
 
-    # 随机延迟，避免请求太快被识别
-    time.sleep(random.uniform(1, 3))
+    # 随机延迟 2-5 秒
+    time.sleep(random.uniform(2, 5))
 
     # --- 2. 检查签到状态 (Check Status) ---
     info_url = "https://cf-v2.uapis.cn/qiandao_info"
     try:
-        info_res = session.get(info_url, timeout=15)
+        info_res = session.get(info_url, timeout=30)
         info_data = safe_json_parse(info_res, account_label, "获取信息")
         
         if info_data and info_data.get("code") == 200:
@@ -87,8 +87,6 @@ def run_signin(index, username, password):
     # --- 3. 执行签到 (Sign In) ---
     sign_url = "https://cf-v2.uapis.cn/qiandao"
     
-    # 这里依然是空参数。
-    # 如果服务端强制校验，这次运行后你会看到"响应内容"里包含具体的错误页面 HTML
     sign_payload = {
         "lot_number": "", 
         "captcha_output": "",
@@ -97,11 +95,11 @@ def run_signin(index, username, password):
     }
 
     try:
-        sign_res = session.post(sign_url, json=sign_payload, timeout=15)
+        sign_res = session.post(sign_url, json=sign_payload, timeout=30)
         sign_data = safe_json_parse(sign_res, account_label, "签到")
 
         if not sign_data:
-            print(f"    [提示] 如果状态码是 403 或 500，说明服务端识别到了缺少极验参数，拦截了请求。")
+            print(f"    [提示] 如果状态码是 522/520，说明 GitHub IP 可能被服务商拉黑了。")
             return
 
         code = sign_data.get("code")
@@ -128,11 +126,11 @@ def main():
         print("Error: ACCOUNTS_JSON 格式错误")
         return
 
-    print("--- 开始批量签到任务 (调试模式) ---")
+    print("--- 开始批量签到任务 (MacOS UA 测试) ---")
     for i, acc in enumerate(accounts):
         run_signin(i, acc['username'], acc['password'])
         print("-" * 30)
-        time.sleep(3) 
+        time.sleep(5) 
     print("--- 任务结束 ---")
 
 if __name__ == "__main__":
